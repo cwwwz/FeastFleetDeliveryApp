@@ -1,0 +1,133 @@
+/* General Styles */
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f9f9f9;
+    color: #333;
+    line-height: 1.6;
+    text-align: center;
+}
+
+/* Header */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px;
+    background-color: #fff;
+    border-bottom: 1px solid #ccc;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+header h1 {
+    margin: 0;
+    color: #556B2F;
+    font-size: 22px;
+}
+
+header nav a {
+    margin: 0 8px;
+    font-size: 16px;
+    color: #333;
+    text-decoration: none;
+    transition: color 0.3s ease;
+}
+
+header nav a:hover {
+    color: #6B8E23;
+}
+
+header .basket {
+    background-color: #556B2F;
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 5px;
+    font-weight: bold;
+    text-decoration: none;
+}
+
+header .basket:hover {
+    background-color: #6B8E23;
+}
+
+/* Main Content */
+.content {
+    margin: 40px auto;
+    padding: 0 20px;
+}
+
+.content h2 {
+    font-size: 20px;
+    margin-bottom: 30px;
+    color: #333;
+}
+
+/* Upload Container */
+.upload-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: 20px auto;
+    position: relative;
+}
+
+.upload-box {
+    width: 300px;
+    height: 200px;
+    border: 2px dashed #ccc;
+    border-radius: 10px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    transition: border-color 0.3s ease;
+}
+
+.upload-box:hover {
+    border-color: #556B2F;
+}
+
+.upload-icon {
+    font-size: 48px;
+    color: #aaa;
+    font-weight: bold;
+    transition: color 0.3s ease;
+}
+
+.upload-box:hover .upload-icon {
+    color: #556B2F;
+}
+
+.hidden-input {
+    display: none;
+}
+
+/* Upload Button */
+.upload-button {
+    padding: 10px 20px;
+    margin-top: 20px;
+    font-size: 16px;
+    font-weight: bold;
+    background-color: #556B2F;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.3s ease;
+}
+
+.upload-button:hover {
+    background-color: #6B8E23;
+}
+
+/* Footer */
+footer {
+    text-align: center;
+    padding: 15px;
+    background-color: #fff;
+    color: #777;
+    font-size: 12px;
+    border-top: 1px solid #ccc;
+    margin-top: 30px;
+}
