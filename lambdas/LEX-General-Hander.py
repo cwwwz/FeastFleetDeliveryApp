@@ -31,11 +31,13 @@ def lambda_handler(event, context):
     # Extract the intent name from the event payload
     intent_name = event['sessionState']['intent']['name']
     print(event)
+
     session_attributes = event.get('sessionState', {}).get('sessionAttributes', {})
-    # Retrieve the user ID
+    logger.info(f"Initial session attributes: {json.dumps(session_attributes)}")
+
     user_id = session_attributes.get('user_id')
     # user_id = "5418a468-9021-70be-a697-06453af3c75f"
-    print('USER_ID', user_id)
+
     # Route to the appropriate handler based on the intent
     if intent_name == "MainIntent":
         return handle_main_intent(event, session_attributes, user_id)
@@ -310,6 +312,19 @@ def decimal_to_float(obj):
     else:
         return obj
 
+def float_to_decimal(obj):
+    """
+    Recursively convert float types to DynamoDB Decimal.
+    """
+    if isinstance(obj, list):
+        return [float_to_decimal(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: float_to_decimal(v) for k, v in obj.items()}
+    elif isinstance(obj, float):
+        return Decimal(str(obj))  # Convert to string first for better precision
+    else:
+        return obj
+
 def get_menu_by_restaurant_id(restaurant_id):
     """
     Query DynamoDB Menu_Items table for menu items by restaurant_name.
@@ -386,7 +401,9 @@ def initialize_cart(user_id):
         # If cart exists, return it
         if "Item" in response:
             logger.info(f"Cart found for user {user_id}.")
-            return response["Item"].get("cart", [])
+            # Convert Decimal objects to float for JSON serialization
+            cart = json.loads(json.dumps(response["Item"].get("cart", []), default=decimal_to_float))
+            return cart
         
         # If cart doesn't exist, initialize it
         logger.info(f"No cart found for user {user_id}. Initializing a new cart.")
@@ -407,7 +424,6 @@ def handle_order_intent(event, session_attributes, user_id):
     """
     intent = event['sessionState']['intent']
     slots = intent['slots']
-    # user_id = "test123"  # Replace with actual user ID retrieval logic
 
     # Safely retrieve slot values
     restaurant_name = (
@@ -431,44 +447,25 @@ def handle_order_intent(event, session_attributes, user_id):
         if slots.get("OrderConfirmation") else None
     )
 
-    # Step 1: Retrieve and store restaurant ID
+    # Step 1: Handle restaurant selection and ID
     if not restaurant_name:
         return {
             "sessionState": {
+                "sessionAttributes": session_attributes,
                 "dialogAction": {"type": "ElicitSlot", "slotToElicit": "RestaurantName"},
                 "intent": intent
             },
             "messages": [{"contentType": "PlainText", "content": "Which restaurant would you like to order from?"}]
         }
-    
-    # Initialize the cart if it does not exist in session attributes
-    if "cart" not in session_attributes:
-        session_attributes["cart"] = json.dumps([])  # Initialize an empty cart in session attributes
-        try:
-            cart_table = dynamodb.Table("Cart")
-            response = cart_table.get_item(Key={"user_id": user_id})
-            if "Item" in response:
-                session_attributes["cart"] = json.dumps(response["Item"]["cart"])  # Load the cart from the database
-                logger.info(f"Cart loaded from database for user {user_id}.")
-            else:
-                # Initialize a new cart in DynamoDB
-                cart_table.put_item(
-                    Item={
-                        "user_id": user_id,
-                        "cart": []  # Save an empty cart in DynamoDB
-                    }
-                )
-                logger.info(f"Initialized a new cart for user {user_id} in DynamoDB.")
-        except Exception as e:
-            logger.error(f"Error initializing cart for user {user_id}: {e}")
 
-
+    # Get or set restaurant_id
     restaurant_id = session_attributes.get("restaurant_id")
-    if "restaurant_id" not in session_attributes:
-        restaurant_id = get_restaurant_id_by_name(restaurant_name)  # Fetch restaurant ID based on name
+    if not restaurant_id:
+        restaurant_id = get_restaurant_id_by_name(restaurant_name)
         if not restaurant_id:
             return {
                 "sessionState": {
+                    "sessionAttributes": session_attributes,
                     "dialogAction": {"type": "Close"},
                     "intent": intent
                 },
@@ -476,11 +473,22 @@ def handle_order_intent(event, session_attributes, user_id):
             }
         session_attributes["restaurant_id"] = restaurant_id
 
-    # Step 2: Retrieve menu and prompt for item name
+    # Step 2: Load or initialize cart from DynamoDB
+    try:
+        cart_table = dynamodb.Table("Cart")
+        cart_response = cart_table.get_item(Key={"user_id": user_id})
+        cart = json.loads(json.dumps(cart_response["Item"].get("cart", []), default=decimal_to_float))
+        
+        # Update session attributes with current cart
+        session_attributes["cart"] = json.dumps(cart)
+        logger.info(f"Loaded cart for user {user_id}: {cart}")
+    except Exception as e:
+        logger.error(f"Error loading cart from DynamoDB: {e}")
+        cart = json.loads(session_attributes.get("cart", "[]"))
+
+    # Step 3: Handle menu retrieval and item selection
     if not item_name:
-        # Ensure the menu is only stored once
         if "menu" not in session_attributes:
-            # Retrieve menu for the given restaurant
             menu = get_menu_by_restaurant_id(restaurant_id)
             if not menu:
                 return {
@@ -491,25 +499,8 @@ def handle_order_intent(event, session_attributes, user_id):
                     },
                     "messages": [{"contentType": "PlainText", "content": "I couldn't find the menu for this restaurant. Please try another one."}]
                 }
-
-            # Format and store the menu
             menu_list = "\n".join([f"{i+1}. {item['item_name']} - ${item['price']:.2f}" for i, item in enumerate(menu)])
             session_attributes["menu"] = json.dumps(menu)
-            logger.info(f"Menu stored in session attributes: {session_attributes['menu']}")
-
-        # Check if the user is already being asked for the item name
-        if session_attributes.get("waiting_for_item_name") == "true":
-            return {
-                "sessionState": {
-                    "sessionAttributes": session_attributes,
-                    "dialogAction": {"type": "ElicitSlot", "slotToElicit": "ItemName"},
-                    "intent": intent
-                },
-                "messages": [{"contentType": "PlainText", "content": "Please choose an item from the menu."}]
-            }
-
-        # Set flag to track that we are eliciting the item name
-        session_attributes["waiting_for_item_name"] = "true"
 
         return {
             "sessionState": {
@@ -517,14 +508,10 @@ def handle_order_intent(event, session_attributes, user_id):
                 "dialogAction": {"type": "ElicitSlot", "slotToElicit": "ItemName"},
                 "intent": intent
             },
-            "messages": [{"contentType": "PlainText", "content": f"Great Choice! Here's the menu from the restaurant:\n{menu_list}\nWhat would you like to order?"}]
+            "messages": [{"contentType": "PlainText", "content": f"Here's the menu:\n{menu_list}\nWhat would you like to order?"}]
         }
-    else:
-        # Reset flag after item name is provided
-        session_attributes.pop("waiting_for_item_name", None)
 
-    
-    # Step 3: Ask for quantity
+    # Step 4: Handle quantity
     if not quantity:
         return {
             "sessionState": {
@@ -534,62 +521,53 @@ def handle_order_intent(event, session_attributes, user_id):
             },
             "messages": [{"contentType": "PlainText", "content": f"How many {item_name} would you like to order?"}]
         }
-    print(quantity, session_attributes)
-    # Fetch the menu from session attributes
+
+    # Step 5: Update cart with new item
     menu = json.loads(session_attributes.get("menu", "[]"))
     if not menu:
         menu = get_menu_by_restaurant_id(restaurant_id)
+    
     item = next((menu_item for menu_item in menu if menu_item["item_name"].lower() == item_name.lower()), None)
-    print(item)
-
     if not item:
-        logger.error(f"Item with name '{item_name}' not found in the menu.")
         return {
             "sessionState": {
-                "dialogAction": {"type": "ElicitSlot", "slotToElicit": "ItemName"},
+                "sessionAttributes": session_attributes,
+                "dialogAction": {"type": "Close"},
                 "intent": intent
             },
             "messages": [{"contentType": "PlainText", "content": f"I couldn't find {item_name} in the menu. Please try again."}]
         }
 
-    # Fetch or initialize the cart from session attributes
+    # Load current cart from session attributes
     cart = json.loads(session_attributes.get("cart", "[]"))
-
-    # Check if the item already exists in the cart
-    existing_item = next((cart_item for cart_item in cart if cart_item["item_id"] == item["item_id"]), None)
+    
+    # Update or add item to cart
+    existing_item = next((cart_item for cart_item in cart if cart_item["item_name"].lower() == item_name.lower()), None)
     if existing_item:
-        # Update quantity only once if the item already exists
         existing_item["quantity"] = int(quantity)
-        logger.info(f"Updated quantity for item: {existing_item['item_name']}. New quantity: {existing_item['quantity']}")
     else:
-        # Add new item to the cart
-        new_item = {
+        cart.append({
             "item_id": item["item_id"],
             "item_name": item["item_name"],
             "quantity": int(quantity),
             "price": float(item["price"])
-        }
-        cart.append(new_item)
-        logger.info(f"Added new item to the cart: {new_item['item_name']} (Quantity: {new_item['quantity']})")
+        })
 
-    # Save the updated cart to session attributes
+    # Update cart in both session attributes and DynamoDB
     session_attributes["cart"] = json.dumps(cart)
-
-    # Save the updated cart to DynamoDB only when confirmed and after modifying the cart
     try:
-        cart = json.loads(session_attributes.get("cart", "[]"))
         cart_table = dynamodb.Table("Cart")
         cart_table.put_item(
             Item={
                 "user_id": user_id,
-                "cart": cart  # Save the updated cart
+                "cart": float_to_decimal(cart)
             }
         )
-        logger.info(f"Updated cart saved for user {user_id}.")
+        logger.info(f"Updated cart in DynamoDB for user {user_id}: {cart}")
     except Exception as e:
-        logger.error(f"Error saving updated cart to DynamoDB for user {user_id}: {e}")
+        logger.error(f"Error updating cart in DynamoDB: {e}")
 
-    # Step 5: Check for additional orders
+    # Step 6: Handle additional orders
     if not additional_order:
         return {
             "sessionState": {
@@ -599,11 +577,12 @@ def handle_order_intent(event, session_attributes, user_id):
             },
             "messages": [{"contentType": "PlainText", "content": f"Added {quantity}x {item_name} to your cart. Would you like anything else?"}]
         }
-    elif additional_order.lower() == "yes":
-        # Reset slots for the next item
-        slots["ItemName"] = None
-        slots["Quantity"] = None
-        slots["AdditionalOrder"] = None
+
+    if additional_order.lower() == "yes":
+        # Reset only the relevant slots for the next item
+        intent["slots"]["ItemName"] = None
+        intent["slots"]["Quantity"] = None
+        intent["slots"]["AdditionalOrder"] = None
         return {
             "sessionState": {
                 "sessionAttributes": session_attributes,
@@ -625,30 +604,48 @@ def handle_order_intent(event, session_attributes, user_id):
                 "dialogAction": {"type": "ElicitSlot", "slotToElicit": "OrderConfirmation"},
                 "intent": intent
             },
-            "messages": [{"contentType": "PlainText", "content": f"Here's your order summary:\n{total_items}\nTotal: ${total_price:.2f}\nWould you like to place this order?"}]
+            "messages": [{"contentType": "PlainText", "content": f"Here's your order summary:\n{total_items}. \nTotal: ${total_price:.2f}.\n Would you like to place this order?"}]
         }
 
     # Step 7: Place the order
     if order_confirmation.lower() == "yes":
         restaurant_id = session_attributes["restaurant_id"]
-        items = [{"item_id": item["item_id"], "quantity": item["quantity"]} for item in cart]
-        total_price = sum(item["price"] * item["quantity"] for item in cart)
+        cart = json.loads(session_attributes.get("cart", "[]"))
+        
+        # Convert quantities to Decimal and keep as Decimal
+        items = [{
+            "item_id": item["item_id"],
+            "quantity": Decimal(str(item["quantity"]))
+        } for item in cart]
+        
+        # Calculate total price using Decimal
+        total_price = Decimal('0')
+        for item in cart:
+            quantity = Decimal(str(item["quantity"]))
+            price = Decimal(str(item["price"]))
+            total_price += quantity * price
 
         # Generate a unique order ID
         order_id = str(uuid.uuid4())
+        
+        # First, create the inner body with proper decimal handling
+        order_data = {
+            "order_id": order_id,
+            "restaurant_id": restaurant_id,
+            "items": [{
+                "item_id": item["item_id"],
+                "quantity": int(item["quantity"])  # Convert to int for JSON serialization
+            } for item in items],
+            "total_price": str(total_price)  # Convert Decimal to string for JSON serialization
+        }
 
-        # Format payload for LF7-place-order
+        # Create the full payload
         order_payload = {
-            "body": json.dumps({  # Ensure 'body' is a serialized JSON string
-                "order_id": order_id,
-                "restaurant_id": restaurant_id,
-                "items": items,
-                "total_price": total_price
-            }),
+            "body": json.dumps(order_data),  # This is now JSON serializable
             "requestContext": {
                 "authorizer": {
                     "claims": {
-                        "sub": user_id  # Include user_id in the requestContext
+                        "sub": user_id
                     }
                 }
             }
@@ -657,23 +654,21 @@ def handle_order_intent(event, session_attributes, user_id):
         try:
             # Invoke LF7-place-order Lambda function
             response = lambda_client.invoke(
-                FunctionName="arn:aws:lambda:us-east-1:699475942485:function:LF7-place-order",  # Your actual Lambda ARN
-                InvocationType="RequestResponse",  # Synchronous invocation to get a response
-                Payload=json.dumps(order_payload)  # Send the payload as JSON
+                FunctionName="arn:aws:lambda:us-east-1:699475942485:function:LF7-place-order",
+                InvocationType="RequestResponse",
+                Payload=json.dumps(order_payload)  # This is now JSON serializable
             )
 
             # Parse the response from LF7
             response_payload = json.loads(response["Payload"].read())
             if response.get("StatusCode") == 200:
-                estimated_delivery_time = response_payload.get("estimated_delivery_time", "unspecified")
-
                 # Clear the cart after placing the order
                 try:
                     cart_table = dynamodb.Table("Cart")
                     cart_table.put_item(
                         Item={
                             "user_id": user_id,
-                            "cart": []  # Save an empty cart to clear it in DynamoDB
+                            "cart": []  # Empty cart in DynamoDB
                         }
                     )
                     logger.info(f"Cart cleared for user {user_id} after placing the order.")
@@ -699,7 +694,7 @@ def handle_order_intent(event, session_attributes, user_id):
                     "messages": [{"contentType": "PlainText", "content": "There was an issue placing your order. Please try again later."}]
                 }
         except Exception as e:
-            logger.error(f"Error invoking LF7 Lambda function: {e}")
+            logger.error(f"Error placing order: {str(e)}")
             return {
                 "sessionState": {
                     "dialogAction": {"type": "Close"},
