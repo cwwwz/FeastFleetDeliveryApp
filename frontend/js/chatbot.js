@@ -33,7 +33,7 @@ async function sendMessage() {
     try {
         const idToken = localStorage.getItem("idToken");
         if (!idToken) {
-            alert("You need to log in to make a reservation.");
+            alert("You need to log in to chat with the bot.");
             window.location.href = "login.html";
             return;
         }
@@ -84,11 +84,7 @@ async function sendMessage() {
             // The request was made but no response was received
             console.error('No response received:', error.request);
             addMessage('No response from server. Please check your connection.', 'bot-message');
-        } else {
-            // Something happened in setting up the request
-            console.error('Error setting up request:', error.message);
-            addMessage('An unexpected error occurred.', 'bot-message');
-        }
+        } 
     }
 }
 
